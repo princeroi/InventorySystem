@@ -11,6 +11,7 @@ use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Table;
+use Illuminate\Support\Facades\Auth;
 
 class CategoryResource extends Resource
 {
@@ -20,10 +21,32 @@ class CategoryResource extends Resource
 
     protected static ?int $navigationSort = 3;
 
+    // -------------------------------------------------------------------------
+    // Permissions
+    // -------------------------------------------------------------------------
+
+    private static function userCan(string $permission): bool
+    {
+        return Auth::user()?->can($permission) ?? false;
+    }
+
+    public static function canViewAny(): bool       { return self::userCan('view-any category'); }
+    public static function canCreate(): bool        { return self::userCan('create category'); }
+    public static function canEdit($record): bool   { return self::userCan('update category'); }
+    public static function canDelete($record): bool { return self::userCan('delete category'); }
+
+    // -------------------------------------------------------------------------
+    // Navigation
+    // -------------------------------------------------------------------------
+
     public static function getNavigationGroup(): ?string
     {
         return 'Stock Management';
     }
+
+    // -------------------------------------------------------------------------
+    // Schema / Table
+    // -------------------------------------------------------------------------
 
     public static function form(Schema $schema): Schema
     {
@@ -34,6 +57,10 @@ class CategoryResource extends Resource
     {
         return CategoriesTable::configure($table);
     }
+
+    // -------------------------------------------------------------------------
+    // Pages / Relations
+    // -------------------------------------------------------------------------
 
     public static function getRelations(): array
     {

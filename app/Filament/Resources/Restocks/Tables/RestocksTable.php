@@ -14,9 +14,23 @@ use Filament\Notifications\Notification;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Placeholder;
 use Illuminate\Support\HtmlString;
+use Illuminate\Support\Facades\Auth;
 
 class RestocksTable
 {
+    // -------------------------------------------------------------------------
+    // Permission Helper
+    // -------------------------------------------------------------------------
+
+    private static function userCan(string $permission): bool
+    {
+        return Auth::user()?->can($permission) ?? false;
+    }
+
+    // -------------------------------------------------------------------------
+    // Variant Map
+    // -------------------------------------------------------------------------
+
     /**
      * Build a keyed map of "item_id:size_label" => ItemVariant in one query.
      */
@@ -49,6 +63,10 @@ class RestocksTable
 
         return $map;
     }
+
+    // -------------------------------------------------------------------------
+    // Table Configuration
+    // -------------------------------------------------------------------------
 
     public static function configure(Table $table): Table
     {
@@ -109,7 +127,6 @@ class RestocksTable
                     ->label('Items')
                     ->html(),
 
-                // Removed duplicate — kept only the formatted version
                 TextColumn::make('note')
                     ->label('Note')
                     ->formatStateUsing(fn ($state) => $state ?: 'No Note')
@@ -121,7 +138,10 @@ class RestocksTable
                         ->label('Mark as Delivered')
                         ->color('success')
                         ->icon('heroicon-s-check')
-                        ->visible(fn ($record) => in_array($record->status, ['pending', 'partial']))
+                        ->visible(fn ($record) =>
+                            in_array($record->status, ['pending', 'partial']) &&
+                            self::userCan('deliver restock')
+                        )
                         ->modalHeading('Mark as Delivered')
                         ->modalDescription('Enter the actual quantity delivered for each item.')
                         ->modalSubmitActionLabel('Confirm Delivery')
@@ -194,7 +214,10 @@ class RestocksTable
                         ->label('Return')
                         ->color('warning')
                         ->icon('heroicon-s-arrow-path')
-                        ->visible(fn ($record) => in_array($record->status, ['delivered', 'partial']))
+                        ->visible(fn ($record) =>
+                            in_array($record->status, ['delivered', 'partial']) &&
+                            self::userCan('return restock')
+                        )
                         ->modalHeading('Return Restock')
                         ->modalDescription('Review the items being returned. You can adjust the quantity for each item before confirming.')
                         ->modalSubmitActionLabel('Confirm Return')
@@ -206,11 +229,25 @@ class RestocksTable
                                 $size     = $restockItem->size;
                                 $label    = $size ? "{$itemName} ({$size})" : $itemName;
 
+                                // ✅ FIX — only allow returning what was actually delivered
+                                // For partial: delivered_quantity (not full quantity)
+                                // For delivered: full quantity
+                                $maxReturnable = $restockItem->delivered_quantity ?? $restockItem->quantity;
+
+                                // Skip items that have nothing delivered yet
+                                if ($maxReturnable <= 0) {
+                                    continue;
+                                }
+
                                 $fields[] = Placeholder::make("label_{$index}")
                                     ->label('')
                                     ->content(new HtmlString(
                                         "<div class='text-sm font-semibold text-gray-700 border-b pb-1 mb-1'>"
                                         . e($label)
+                                        . ($restockItem->delivered_quantity !== null && $restockItem->delivered_quantity < $restockItem->quantity
+                                            ? " <span class='text-warning-600 text-xs font-normal'>(partial: {$restockItem->delivered_quantity} of {$restockItem->quantity} delivered)</span>"
+                                            : ""
+                                        )
                                         . "</div>"
                                     ));
 
@@ -218,12 +255,23 @@ class RestocksTable
                                     ->label("Quantity to Return")
                                     ->numeric()
                                     ->minValue(0)
-                                    ->maxValue($restockItem->quantity)
-                                    ->default($restockItem->quantity)
-                                    ->suffix("/ {$restockItem->quantity} delivered")
-                                    ->helperText("Max: {$restockItem->quantity}")
+                                    ->maxValue($maxReturnable)          // ✅ only delivered qty
+                                    ->default($maxReturnable)           // ✅ default to delivered qty
+                                    ->suffix("/ {$maxReturnable} delivered")
+                                    ->helperText("Max returnable: {$maxReturnable}")
                                     ->required()
                                     ->dehydrated(true);
+                            }
+
+                            // If no items have been delivered yet, show a notice
+                            if (count($fields) === 0) {
+                                $fields[] = Placeholder::make('no_delivered')
+                                    ->label('')
+                                    ->content(new HtmlString(
+                                        "<div class='text-sm text-warning-700 bg-warning-50 border border-warning-200 rounded-lg px-4 py-3'>
+                                            ⚠️ No items have been delivered yet. Nothing to return.
+                                        </div>"
+                                    ));
                             }
 
                             return $fields;
@@ -236,7 +284,12 @@ class RestocksTable
                             $variantMap = self::variantMap($record->items);
 
                             foreach ($record->items as $index => $restockItem) {
-                                $quantityToReturn = (int) ($quantities[$index] ?? $restockItem->quantity);
+                                // ✅ Only return what was actually delivered
+                                $maxReturnable    = $restockItem->delivered_quantity ?? $restockItem->quantity;
+                                $quantityToReturn = (int) ($quantities[$index] ?? $maxReturnable);
+
+                                // ✅ Clamp to max returnable — never exceed delivered qty
+                                $quantityToReturn = min($quantityToReturn, $maxReturnable);
 
                                 if ($quantityToReturn <= 0) continue;
 
@@ -255,7 +308,10 @@ class RestocksTable
                         ->label('Cancel')
                         ->color('danger')
                         ->icon('heroicon-s-x-mark')
-                        ->visible(fn ($record) => $record->status === 'pending')
+                        ->visible(fn ($record) =>
+                            $record->status === 'pending' &&
+                            self::userCan('cancel restock')
+                        )
                         ->action(function ($record) {
                             $record->update(['status' => 'cancelled']);
 
@@ -267,7 +323,10 @@ class RestocksTable
                         ->requiresConfirmation(),
 
                     EditAction::make()
-                        ->visible(fn ($record) => $record->status === 'pending')
+                        ->visible(fn ($record) =>
+                            $record->status === 'pending' &&
+                            self::userCan('update restock')
+                        )
                         ->fillForm(function ($record): array {
                             $grouped = [];
 
@@ -329,6 +388,7 @@ class RestocksTable
                     ->label('View Logs')
                     ->icon('heroicon-s-clock')
                     ->color('gray')
+                    ->visible(fn () => self::userCan('view-any restock'))
                     ->modalHeading('Restock Activity Log')
                     ->modalSubmitAction(false)
                     ->modalCancelActionLabel('Close')
@@ -410,6 +470,7 @@ class RestocksTable
                         ->label('Deliver Selected')
                         ->color('success')
                         ->icon('heroicon-s-check')
+                        ->visible(fn () => self::userCan('deliver restock'))
                         ->modalDescription(fn ($records) =>
                             'Only pending records will be delivered. ' .
                             $records->where('status', '!=', 'pending')->count() . ' record(s) will be skipped.'
@@ -450,6 +511,7 @@ class RestocksTable
                         ->label('Cancel Selected')
                         ->color('danger')
                         ->icon('heroicon-s-x-mark')
+                        ->visible(fn () => self::userCan('cancel restock'))
                         ->modalDescription(fn ($records) =>
                             'Only pending records will be cancelled. ' .
                             $records->where('status', '!=', 'pending')->count() . ' record(s) will be skipped.'

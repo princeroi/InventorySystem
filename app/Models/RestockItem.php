@@ -25,4 +25,14 @@ class RestockItem extends Model
     {
         return $this->belongsTo(Item::class);
     }
+
+    public function getReturnableQuantityAttribute(): int
+    {
+        return $this->delivered_quantity ?? $this->quantity;
+    }
+
+    public function getHasDeliveredAttribute(): bool
+    {
+        return ($this->delivered_quantity ?? $this->quantity) > 0;
+    }
 }

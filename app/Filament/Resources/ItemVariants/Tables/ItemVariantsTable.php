@@ -7,9 +7,23 @@ use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
+use Illuminate\Support\Facades\Auth;
 
 class ItemVariantsTable
 {
+    // -------------------------------------------------------------------------
+    // Permission Helper
+    // -------------------------------------------------------------------------
+
+    private static function userCan(string $permission): bool
+    {
+        return Auth::user()?->can($permission) ?? false;
+    }
+
+    // -------------------------------------------------------------------------
+    // Table Configuration
+    // -------------------------------------------------------------------------
+
     public static function configure(Table $table): Table
     {
         return $table
@@ -48,6 +62,16 @@ class ItemVariantsTable
                     ->sortable()
                     ->toggleable(isToggledHiddenByDefault: true),
             ])
-            ->filters([]);
+            ->filters([])
+            ->recordActions([
+                EditAction::make()
+                    ->visible(fn () => self::userCan('update stock')),
+            ])
+            ->toolbarActions([
+                BulkActionGroup::make([
+                    DeleteBulkAction::make()
+                        ->visible(fn () => self::userCan('delete stock')),
+                ]),
+            ]);
     }
 }

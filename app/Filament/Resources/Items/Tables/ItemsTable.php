@@ -10,9 +10,23 @@ use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
 use Filament\Actions\Action;
 use Illuminate\Support\HtmlString;
+use Illuminate\Support\Facades\Auth;
 
 class ItemsTable
 {
+    // -------------------------------------------------------------------------
+    // Permission Helper
+    // -------------------------------------------------------------------------
+
+    private static function userCan(string $permission): bool
+    {
+        return Auth::user()?->can($permission) ?? false;
+    }
+
+    // -------------------------------------------------------------------------
+    // Table Configuration
+    // -------------------------------------------------------------------------
+
     public static function configure(Table $table): Table
     {
         return $table
@@ -40,6 +54,7 @@ class ItemsTable
                 Action::make('viewVariants')
                     ->label('Variants')
                     ->icon('heroicon-o-eye')
+                    ->visible(fn () => self::userCan('view-any item'))
                     ->modalHeading(fn ($record) => "Variants — {$record->name}")
                     ->modalContent(fn ($record) => new HtmlString(
                         $record->itemVariants->isEmpty()
@@ -70,12 +85,16 @@ class ItemsTable
                     ->modalSubmitAction(false)
                     ->modalCancelActionLabel('Close'),
 
-                EditAction::make(),
-                DeleteAction::make(),
+                EditAction::make()
+                    ->visible(fn () => self::userCan('update item')),
+
+                DeleteAction::make()
+                    ->visible(fn () => self::userCan('delete item')),
             ])
             ->toolbarActions([
                 BulkActionGroup::make([
-                    DeleteBulkAction::make(),
+                    DeleteBulkAction::make()
+                        ->visible(fn () => self::userCan('delete item')),
                 ]),
             ]);
     }

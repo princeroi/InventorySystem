@@ -2,9 +2,10 @@
 
 return [
 
+
     'resources' => [
-        'PermissionResource' => \Althinect\FilamentSpatieRolesPermissions\Resources\PermissionResource::class,
-        'RoleResource' => \Althinect\FilamentSpatieRolesPermissions\Resources\RoleResource::class,
+        'PermissionResource' => \App\Filament\Resources\Permissions\PermissionResource::class,
+        'RoleResource'       => \App\Filament\Resources\Roles\RoleResource::class,
     ],
 
     'preload_roles' => true,

@@ -16,9 +16,23 @@ use Filament\Forms\Components\Toggle;
 use Filament\Forms\Components\Placeholder;
 use Illuminate\Support\HtmlString;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Auth;
 
 class IssuancesTable
 {
+    // -------------------------------------------------------------------------
+    // Permission Helper
+    // -------------------------------------------------------------------------
+
+    private static function userCan(string $permission): bool
+    {
+        return Auth::user()?->can($permission) ?? false;
+    }
+
+    // -------------------------------------------------------------------------
+    // Variant Map
+    // -------------------------------------------------------------------------
+
     /**
      * Build a keyed map of "item_id:size_label" => ItemVariant for a set of issuance items.
      * One query instead of one-per-item.
@@ -34,7 +48,6 @@ class IssuancesTable
             return [];
         }
 
-        // Fetch all needed variants in a single query
         $variants = ItemVariant::query()
             ->where(function ($q) use ($pairs) {
                 foreach ($pairs as $p) {
@@ -53,6 +66,10 @@ class IssuancesTable
 
         return $map;
     }
+
+    // -------------------------------------------------------------------------
+    // Table Configuration
+    // -------------------------------------------------------------------------
 
     public static function configure(Table $table): Table
     {
@@ -126,7 +143,10 @@ class IssuancesTable
                         ->label('Release')
                         ->color('primary')
                         ->icon('heroicon-s-truck')
-                        ->visible(fn ($record) => $record->status === 'pending')
+                        ->visible(fn ($record) =>
+                            $record->status === 'pending' &&
+                            self::userCan('release issuance')
+                        )
                         ->action(function ($record) {
                             $variantMap        = self::variantMap($record->items);
                             $insufficientItems = [];
@@ -178,7 +198,10 @@ class IssuancesTable
                         ->label('Issue')
                         ->color('success')
                         ->icon('heroicon-s-check')
-                        ->visible(fn ($record) => $record->status === 'released')
+                        ->visible(fn ($record) =>
+                            $record->status === 'released' &&
+                            self::userCan('issue issuance')
+                        )
                         ->action(function ($record) {
                             $record->update([
                                 'status'    => 'issued',
@@ -197,7 +220,10 @@ class IssuancesTable
                         ->label('Return')
                         ->color('warning')
                         ->icon('heroicon-s-arrow-path')
-                        ->visible(fn ($record) => $record->status === 'released')
+                        ->visible(fn ($record) =>
+                            $record->status === 'released' &&
+                            self::userCan('return issuance')
+                        )
                         ->modalHeading('Return Issuance')
                         ->modalDescription('Choose whether to restore stock, then adjust quantities per item if needed.')
                         ->modalSubmitActionLabel('Confirm Return')
@@ -274,7 +300,10 @@ class IssuancesTable
                         ->label('Cancel')
                         ->color('danger')
                         ->icon('heroicon-s-x-mark')
-                        ->visible(fn ($record) => $record->status === 'pending')
+                        ->visible(fn ($record) =>
+                            $record->status === 'pending' &&
+                            self::userCan('cancel issuance')
+                        )
                         ->action(fn ($record) => $record->update([
                             'status'       => 'cancelled',
                             'cancelled_at' => now(),
@@ -282,7 +311,10 @@ class IssuancesTable
                         ->requiresConfirmation(),
 
                     EditAction::make()
-                        ->visible(fn ($record) => $record->status === 'pending')
+                        ->visible(fn ($record) =>
+                            $record->status === 'pending' &&
+                            self::userCan('update issuance')
+                        )
                         ->fillForm(function ($record): array {
                             $grouped = [];
 
@@ -345,12 +377,12 @@ class IssuancesTable
                     ->label('View Logs')
                     ->icon('heroicon-s-clock')
                     ->color('gray')
+                    ->visible(fn () => self::userCan('view-any issuance'))
                     ->modalHeading('Issuance Activity Log')
                     ->modalSubmitAction(false)
                     ->modalCancelActionLabel('Close')
                     ->modalWidth('lg')
                     ->form(function ($record): array {
-                        // logs already eager-loaded via getEloquentQuery()
                         $logs = $record->logs;
 
                         if ($logs->isEmpty()) {
@@ -428,6 +460,7 @@ class IssuancesTable
                         ->label('Release Selected')
                         ->color('primary')
                         ->icon('heroicon-s-truck')
+                        ->visible(fn () => self::userCan('release issuance'))
                         ->modalDescription(fn ($records) =>
                             'Only pending records will be released. ' .
                             $records->where('status', '!=', 'pending')->count() . ' record(s) will be skipped.'
@@ -435,9 +468,7 @@ class IssuancesTable
                         ->action(function ($records) {
                             $pendingRecords = $records->where('status', 'pending');
 
-                            // Collect ALL issuance items across all pending records, then
-                            // fetch variants in ONE query instead of one per item per record.
-                            $allItems = $pendingRecords->flatMap(fn ($r) => $r->items);
+                            $allItems   = $pendingRecords->flatMap(fn ($r) => $r->items);
                             $variantMap = self::variantMap($allItems);
 
                             $skipped  = [];
@@ -505,6 +536,7 @@ class IssuancesTable
                         ->label('Issue Selected')
                         ->color('success')
                         ->icon('heroicon-s-check')
+                        ->visible(fn () => self::userCan('issue issuance'))
                         ->modalDescription(fn ($records) =>
                             'Only released records will be issued. ' .
                             $records->where('status', '!=', 'released')->count() . ' record(s) will be skipped.'
@@ -528,10 +560,12 @@ class IssuancesTable
                         ->requiresConfirmation()
                         ->deselectRecordsAfterCompletion(),
 
+                    // BULK RETURN
                     BulkAction::make('bulk_return')
                         ->label('Return Selected')
                         ->color('warning')
                         ->icon('heroicon-s-arrow-path')
+                        ->visible(fn () => self::userCan('return issuance'))
                         ->modalHeading('Bulk Return Issuances')
                         ->modalSubmitActionLabel('Confirm Return')
                         ->form(function (): array {
@@ -579,7 +613,6 @@ class IssuancesTable
                             $returned        = 0;
 
                             if ($restoreStock) {
-                                // Single variant map for all records
                                 $allItems   = $releasedRecords->flatMap(fn ($r) => $r->load('items')->items);
                                 $variantMap = self::variantMap($allItems);
 
@@ -624,6 +657,7 @@ class IssuancesTable
                         ->label('Cancel Selected')
                         ->color('danger')
                         ->icon('heroicon-s-x-mark')
+                        ->visible(fn () => self::userCan('cancel issuance'))
                         ->modalDescription(fn ($records) =>
                             'Only pending records will be cancelled. ' .
                             $records->where('status', '!=', 'pending')->count() . ' record(s) will be skipped.'

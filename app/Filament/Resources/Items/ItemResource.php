@@ -14,6 +14,7 @@ use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Facades\Auth;
 
 class ItemResource extends Resource
 {
@@ -25,10 +26,32 @@ class ItemResource extends Resource
 
     // Removed $recordTitleAttribute = 'Item' — not a real model column
 
+    // -------------------------------------------------------------------------
+    // Permissions
+    // -------------------------------------------------------------------------
+
+    private static function userCan(string $permission): bool
+    {
+        return Auth::user()?->can($permission) ?? false;
+    }
+
+    public static function canViewAny(): bool       { return self::userCan('view-any item'); }
+    public static function canCreate(): bool        { return self::userCan('create item'); }
+    public static function canEdit($record): bool   { return self::userCan('update item'); }
+    public static function canDelete($record): bool { return self::userCan('delete item'); }
+
+    // -------------------------------------------------------------------------
+    // Navigation
+    // -------------------------------------------------------------------------
+
     public static function getNavigationGroup(): ?string
     {
         return 'Stock Management';
     }
+
+    // -------------------------------------------------------------------------
+    // Schema / Table
+    // -------------------------------------------------------------------------
 
     public static function form(Schema $schema): Schema
     {
@@ -40,17 +63,9 @@ class ItemResource extends Resource
         return ItemsTable::configure($table);
     }
 
-    public static function getRelations(): array
-    {
-        return [];
-    }
-
-    public static function getPages(): array
-    {
-        return [
-            'index'  => ListItems::route('/'),
-        ];
-    }
+    // -------------------------------------------------------------------------
+    // Query
+    // -------------------------------------------------------------------------
 
     public static function getEloquentQuery(): Builder
     {
@@ -61,5 +76,21 @@ class ItemResource extends Resource
                 'category:id,name',
                 'itemVariants:id,item_id,size_label,quantity',
             ]);
+    }
+
+    // -------------------------------------------------------------------------
+    // Pages / Relations
+    // -------------------------------------------------------------------------
+
+    public static function getRelations(): array
+    {
+        return [];
+    }
+
+    public static function getPages(): array
+    {
+        return [
+            'index' => ListItems::route('/'),
+        ];
     }
 }

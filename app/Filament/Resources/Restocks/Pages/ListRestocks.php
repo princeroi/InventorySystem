@@ -9,11 +9,25 @@ use Filament\Actions\CreateAction;
 use Filament\Resources\Pages\ListRecords;
 use Filament\Schemas\Components\Tabs\Tab;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 
 class ListRestocks extends ListRecords
 {
     protected static string $resource = RestockResource::class;
+
+    // -------------------------------------------------------------------------
+    // Permission Helper
+    // -------------------------------------------------------------------------
+
+    private function userCan(string $permission): bool
+    {
+        return Auth::user()?->can($permission) ?? false;
+    }
+
+    // -------------------------------------------------------------------------
+    // Status Counts
+    // -------------------------------------------------------------------------
 
     /**
      * Single grouped COUNT query instead of one per tab.
@@ -29,12 +43,17 @@ class ListRestocks extends ListRecords
         return array_merge(['all' => array_sum($rows)], $rows);
     }
 
+    // -------------------------------------------------------------------------
+    // Header Actions
+    // -------------------------------------------------------------------------
+
     protected function getHeaderActions(): array
     {
         $cachedItems = [];
 
         return [
             CreateAction::make()
+                ->visible(fn () => $this->userCan('create restock'))
                 ->mutateFormDataUsing(function (array $data) use (&$cachedItems): array {
                     $cachedItems = $data['items'] ?? [];
                     unset($data['items']);
@@ -90,6 +109,10 @@ class ListRestocks extends ListRecords
         ];
     }
 
+    // -------------------------------------------------------------------------
+    // Variant Map
+    // -------------------------------------------------------------------------
+
     /**
      * Build a keyed map of "item_id:size" => ItemVariant in one query.
      */
@@ -122,6 +145,10 @@ class ListRestocks extends ListRecords
 
         return $map;
     }
+
+    // -------------------------------------------------------------------------
+    // Tabs
+    // -------------------------------------------------------------------------
 
     public function getTabs(): array
     {

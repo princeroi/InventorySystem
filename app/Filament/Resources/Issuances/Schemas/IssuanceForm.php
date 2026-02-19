@@ -21,16 +21,14 @@ class IssuanceForm
             return [];
         }
 
-        static $cache = [];
-
-        if (! array_key_exists($itemId, $cache)) {
-            $cache[$itemId] = ItemVariant::where('item_id', $itemId)
+        return cache()->remember(
+            "variants_for_item_{$itemId}",
+            now()->addMinutes(5),
+            fn () => ItemVariant::where('item_id', $itemId)
                 ->get(['id', 'item_id', 'size_label', 'quantity'])
                 ->keyBy('size_label')
-                ->toArray();
-        }
-
-        return $cache[$itemId];
+                ->toArray()
+        );
     }
 
     public static function configure(Schema $schema): Schema
@@ -105,7 +103,6 @@ class IssuanceForm
                     ->label('Items')
                     ->columnSpanFull()
                     ->schema([
-                        // Item dropdown — full width inside the outer repeater row
                         Select::make('item_id')
                             ->label('Item')
                             ->options(fn () => \App\Models\Item::pluck('name', 'id')->toArray())
@@ -139,7 +136,6 @@ class IssuanceForm
                             ->required()
                             ->columnSpanFull(),
 
-                        // Inner repeater — Size | Quantity displayed side by side (2 columns)
                         Repeater::make('sizes')
                             ->label('Sizes & Quantities')
                             ->columnSpanFull()
@@ -184,10 +180,9 @@ class IssuanceForm
                                 TextInput::make('quantity')
                                     ->numeric()
                                     ->minValue(1)
-                                    ->live(debounce: 500)
-                                    ->required(),
+                                    ->live(debounce: 1000) 
+                                    ->required(),         
 
-                                // Stock note below, spans both columns
                                 Placeholder::make('stock_note')
                                     ->label('')
                                     ->columnSpanFull()

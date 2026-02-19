@@ -4,16 +4,32 @@ namespace App\Filament\Resources\Issuances\Pages;
 
 use App\Filament\Resources\Issuances\IssuanceResource;
 use App\Models\Issuance;
+use App\Models\IssuanceItem;
 use Filament\Actions\CreateAction;
 use Filament\Resources\Pages\ListRecords;
 use Filament\Schemas\Components\Tabs;
 use Filament\Schemas\Components\Tabs\Tab;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 
 class ListIssuances extends ListRecords
 {
     protected static string $resource = IssuanceResource::class;
+
+    // -------------------------------------------------------------------------
+    // Permission Helper
+    // -------------------------------------------------------------------------
+
+    private function userCan(string $permission): bool
+    {
+        return Auth::user()?->can($permission) ?? false;
+    }
+
+    // -------------------------------------------------------------------------
+    // Status Counts
+    // -------------------------------------------------------------------------
+
     protected function getStatusCounts(): array
     {
         $rows = Issuance::query()
@@ -30,12 +46,17 @@ class ListIssuances extends ListRecords
         );
     }
 
+    // -------------------------------------------------------------------------
+    // Header Actions
+    // -------------------------------------------------------------------------
+
     protected function getHeaderActions(): array
     {
         $cachedItems = [];
 
         return [
             CreateAction::make()
+                ->visible(fn () => $this->userCan('create issuance'))
                 ->mutateFormDataUsing(function (array $data) use (&$cachedItems): array {
                     $cachedItems = $data['issuance_items'] ?? [];
                     unset($data['issuance_items']);
@@ -73,6 +94,10 @@ class ListIssuances extends ListRecords
                 }),
         ];
     }
+
+    // -------------------------------------------------------------------------
+    // Tabs
+    // -------------------------------------------------------------------------
 
     public function getTabs(): array
     {

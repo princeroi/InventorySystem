@@ -13,6 +13,7 @@ use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 use Filament\Tables\Table;
+use Illuminate\Support\Facades\Auth;
 
 class UserResource extends Resource
 {
@@ -20,12 +21,34 @@ class UserResource extends Resource
 
     protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedUserGroup;
 
+    protected static ?string $recordTitleAttribute = 'users';
+
+    // -------------------------------------------------------------------------
+    // Permissions
+    // -------------------------------------------------------------------------
+
+    private static function userCan(string $permission): bool
+    {
+        return Auth::user()?->can($permission) ?? false;
+    }
+
+    public static function canViewAny(): bool       { return self::userCan('view-any user'); }
+    public static function canCreate(): bool        { return self::userCan('create user'); }
+    public static function canEdit($record): bool   { return self::userCan('update user'); }
+    public static function canDelete($record): bool { return self::userCan('delete user'); }
+
+    // -------------------------------------------------------------------------
+    // Navigation
+    // -------------------------------------------------------------------------
+
     public static function getNavigationGroup(): ?string
     {
         return 'User Management';
     }
 
-    protected static ?string $recordTitleAttribute = 'users';
+    // -------------------------------------------------------------------------
+    // Schema / Table
+    // -------------------------------------------------------------------------
 
     public static function form(Schema $schema): Schema
     {
@@ -36,6 +59,10 @@ class UserResource extends Resource
     {
         return UsersTable::configure($table);
     }
+
+    // -------------------------------------------------------------------------
+    // Pages / Relations
+    // -------------------------------------------------------------------------
 
     public static function getRelations(): array
     {
@@ -48,8 +75,6 @@ class UserResource extends Resource
     {
         return [
             'index' => ListUsers::route('/'),
-            'create' => CreateUser::route('/create'),
-            'edit' => EditUser::route('/{record}/edit'),
         ];
     }
 }
