@@ -15,22 +15,20 @@ use Filament\Notifications\Notification;
 
 class RestockForm
 {
+    /**
+     * Always reads directly from the DB — no cache.
+     * Ensures stock numbers are always accurate after every restock/delivery.
+     */
     private static function variantsForItem(?int $itemId): array
     {
         if (! $itemId) {
             return [];
         }
 
-        static $cache = [];
-
-        if (! array_key_exists($itemId, $cache)) {
-            $cache[$itemId] = ItemVariant::where('item_id', $itemId)
-                ->get(['id', 'item_id', 'size_label', 'quantity'])
-                ->keyBy('size_label')
-                ->toArray();
-        }
-
-        return $cache[$itemId];
+        return ItemVariant::where('item_id', $itemId)
+            ->get(['id', 'item_id', 'size_label', 'quantity'])
+            ->keyBy('size_label')
+            ->toArray();
     }
 
     public static function configure(Schema $schema): Schema
@@ -104,13 +102,12 @@ class RestockForm
                     ->label('Items')
                     ->columnSpanFull()
                     ->schema([
-                        // Item dropdown — full width inside the outer repeater row
                         Select::make('item_id')
                             ->label('Item')
                             ->options(fn () => \App\Models\Item::pluck('name', 'id')->toArray())
                             ->searchable()
                             ->preload()
-                            ->reactive()
+                            ->live()
                             ->afterStateUpdated(function (callable $get, callable $set, $state) {
                                 if (! $state) return;
 
@@ -138,7 +135,6 @@ class RestockForm
                             ->required()
                             ->columnSpanFull(),
 
-                        // Inner repeater — Size | Quantity displayed side by side (2 columns)
                         Repeater::make('sizes')
                             ->label('Sizes & Quantities')
                             ->columnSpanFull()
@@ -148,7 +144,9 @@ class RestockForm
                                 Select::make('size')
                                     ->label('Size')
                                     ->options(function (callable $get) {
-                                        $itemId   = $get('../../item_id');
+                                        $itemId = $get('../../item_id');
+
+                                        // Always live from DB — no cache
                                         $variants = self::variantsForItem($itemId);
 
                                         return collect($variants)
@@ -157,7 +155,7 @@ class RestockForm
                                             ])
                                             ->toArray();
                                     })
-                                    ->reactive()
+                                    ->live()
                                     ->afterStateUpdated(function (callable $get, callable $set, $state) {
                                         if (! $state) return;
 
@@ -183,10 +181,9 @@ class RestockForm
                                 TextInput::make('quantity')
                                     ->numeric()
                                     ->minValue(1)
-                                    ->reactive()
+                                    ->live(debounce: 500)
                                     ->required(),
 
-                                // Stock note below, spans both columns
                                 Placeholder::make('current_stock_note')
                                     ->label('')
                                     ->columnSpanFull()
@@ -198,12 +195,13 @@ class RestockForm
                                             return null;
                                         }
 
+                                        // Always live from DB — no cache
                                         $variants = self::variantsForItem($itemId);
 
                                         if (! isset($variants[$size])) {
                                             return new HtmlString(
-                                                "<div class=\"text-sm text-danger-600 bg-danger-50 border
-                                                    border-danger-200 rounded-lg px-3 py-2 mt-1\">
+                                                "<div class='text-sm text-danger-600 bg-danger-50 border
+                                                    border-danger-200 rounded-lg px-3 py-2 mt-1'>
                                                     ⚠️ Variant not found.
                                                 </div>"
                                             );
@@ -212,8 +210,8 @@ class RestockForm
                                         $stock = $variants[$size]['quantity'] ?? 0;
 
                                         return new HtmlString(
-                                            "<div class=\"text-sm text-gray-600 bg-gray-50 border
-                                                border-gray-200 rounded-lg px-3 py-2 mt-1\">
+                                            "<div class='text-sm text-gray-600 bg-gray-50 border
+                                                border-gray-200 rounded-lg px-3 py-2 mt-1'>
                                                 📦 Current stock: <strong>{$stock}</strong>
                                             </div>"
                                         );

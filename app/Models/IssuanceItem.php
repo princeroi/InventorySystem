@@ -12,6 +12,8 @@ class IssuanceItem extends Model
         'item_id',
         'size',
         'quantity',
+        'released_quantity',
+        'remaining_quantity',
     ];
 
     public function issuance(): BelongsTo
@@ -26,64 +28,75 @@ class IssuanceItem extends Model
 
     protected static function booted(): void
     {
-        // When an item is first created, deduct stock if the parent issuance
-        // is already in a stock-consuming status.
+        // ── created ──────────────────────────────────────────────────────────
+        // The CREATE flow in the modal uses IssuanceItem::insert() which
+        // bypasses this event entirely. Stock deduction for new issuances is
+        // handled in ListIssuances CreateAction::after().
+        //
+        // This event only fires for items added via the EDIT modal
+        // (EditAction::after() uses IssuanceItem::create() individually).
+        // In that case we deduct stock if the issuance is in a stock-consuming
+        // status.
         static::created(function (self $issuanceItem) {
-            $status = $issuanceItem->issuance?->status;
+            $issuance = $issuanceItem->issuance;
 
-            if (in_array($status, ['issued', 'released'])) {
+            if (! $issuance) return;
+
+            if (in_array($issuance->status, ['issued', 'released'])) {
                 self::adjustStock($issuanceItem, 'decrement');
             }
-
         });
 
-        // When an item row is deleted (e.g. removed from Repeater on edit),
-        // reverse its stock effect based on the parent issuance status.
+        // ── deleted ──────────────────────────────────────────────────────────
+        // When a size row is removed in the Edit modal Repeater, restore stock
+        // if the issuance is in a stock-consuming status.
         static::deleted(function (self $issuanceItem) {
-            $status = $issuanceItem->issuance?->status;
+            $issuance = $issuanceItem->issuance;
 
-            if (in_array($status, ['issued', 'released'])) {
-                self::adjustStock($issuanceItem, 'increment'); // restore
+            if (! $issuance) return;
+
+            if (in_array($issuance->status, ['issued', 'released'])) {
+                self::adjustStock($issuanceItem, 'increment');
             }
         });
 
-        // When quantity is updated on an existing item row, adjust the diff.
+        // ── updated ──────────────────────────────────────────────────────────
+        // When quantity changes on an existing item row in the Edit modal,
+        // adjust the stock difference.
         static::updated(function (self $issuanceItem) {
             if (! $issuanceItem->isDirty('quantity')) {
                 return;
             }
 
-            $status = $issuanceItem->issuance?->status;
+            $issuance = $issuanceItem->issuance;
 
-            if (! in_array($status, ['issued', 'released', 'returned'])) {
+            if (! $issuance) return;
+
+            if (! in_array($issuance->status, ['issued', 'released'])) {
                 return;
             }
 
             $oldQty = $issuanceItem->getOriginal('quantity');
             $newQty = $issuanceItem->quantity;
-            $diff   = $newQty - $oldQty; // positive = more taken, negative = less taken
+            $diff   = $newQty - $oldQty;
 
-            if ($diff === 0) {
-                return;
-            }
+            if ($diff === 0) return;
 
             $variant = ItemVariant::where('item_id', $issuanceItem->item_id)
                 ->where('size_label', $issuanceItem->size)
                 ->first();
 
-            if (! $variant) {
-                return;
-            }
+            if (! $variant) return;
 
-            if (in_array($status, ['issued', 'released'])) {
-                // More quantity = deduct more; less quantity = restore some
-                $diff > 0
-                    ? $variant->decrement('quantity', $diff)
-                    : $variant->increment('quantity', abs($diff));
-            }
-
+            $diff > 0
+                ? $variant->decrement('quantity', $diff)
+                : $variant->increment('quantity', abs($diff));
         });
     }
+
+    // -------------------------------------------------------------------------
+    // Stock Helper
+    // -------------------------------------------------------------------------
 
     private static function adjustStock(self $issuanceItem, string $direction): void
     {
@@ -91,9 +104,7 @@ class IssuanceItem extends Model
             ->where('size_label', $issuanceItem->size)
             ->first();
 
-        if (! $variant) {
-            return;
-        }
+        if (! $variant) return;
 
         $direction === 'decrement'
             ? $variant->decrement('quantity', $issuanceItem->quantity)

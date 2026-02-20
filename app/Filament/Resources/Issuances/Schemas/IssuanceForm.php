@@ -15,20 +15,20 @@ use Filament\Forms\Components\Textarea;
 
 class IssuanceForm
 {
+    /**
+     * Always reads directly from the DB — no cache.
+     * This ensures stock numbers are always accurate after every issuance.
+     */
     private static function variantsForItem(?int $itemId): array
     {
         if (! $itemId) {
             return [];
         }
 
-        return cache()->remember(
-            "variants_for_item_{$itemId}",
-            now()->addMinutes(5),
-            fn () => ItemVariant::where('item_id', $itemId)
-                ->get(['id', 'item_id', 'size_label', 'quantity'])
-                ->keyBy('size_label')
-                ->toArray()
-        );
+        return ItemVariant::where('item_id', $itemId)
+            ->get(['id', 'item_id', 'size_label', 'quantity'])
+            ->keyBy('size_label')
+            ->toArray();
     }
 
     public static function configure(Schema $schema): Schema
@@ -146,6 +146,8 @@ class IssuanceForm
                                     ->label('Size')
                                     ->options(function (callable $get) {
                                         $itemId   = $get('../../item_id');
+
+                                        // Always live from DB — no cache
                                         $variants = self::variantsForItem($itemId);
 
                                         return collect($variants)
@@ -180,8 +182,8 @@ class IssuanceForm
                                 TextInput::make('quantity')
                                     ->numeric()
                                     ->minValue(1)
-                                    ->live(debounce: 1000) 
-                                    ->required(),         
+                                    ->live(debounce: 500)
+                                    ->required(),
 
                                 Placeholder::make('stock_note')
                                     ->label('')
@@ -194,6 +196,7 @@ class IssuanceForm
 
                                         if (! $itemId || ! $size) return null;
 
+                                        // Always live from DB — no cache
                                         $variants = self::variantsForItem($itemId);
                                         $stock    = $variants[$size]['quantity'] ?? 0;
 

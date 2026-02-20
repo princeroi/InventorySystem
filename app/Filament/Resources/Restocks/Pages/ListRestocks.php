@@ -5,6 +5,7 @@ namespace App\Filament\Resources\Restocks\Pages;
 use App\Filament\Resources\Restocks\RestockResource;
 use App\Models\Restock;
 use App\Models\RestockItem;
+use App\Models\ItemVariant;
 use Filament\Actions\CreateAction;
 use Filament\Resources\Pages\ListRecords;
 use Filament\Schemas\Components\Tabs\Tab;
@@ -29,9 +30,6 @@ class ListRestocks extends ListRecords
     // Status Counts
     // -------------------------------------------------------------------------
 
-    /**
-     * Single grouped COUNT query instead of one per tab.
-     */
     protected function getStatusCounts(): array
     {
         $rows = Restock::query()
@@ -60,7 +58,7 @@ class ListRestocks extends ListRecords
                     return $data;
                 })
                 ->after(function ($record) use (&$cachedItems): void {
-                    // Bulk-insert all restock items in one query
+                    // Build raw rows for bulk insert
                     $rows = [];
                     $now  = now();
 
@@ -78,7 +76,7 @@ class ListRestocks extends ListRecords
                                 'restock_id' => $record->id,
                                 'item_id'    => $itemId,
                                 'size'       => $size,
-                                'quantity'   => $quantity,
+                                'quantity'   => (int) $quantity,
                                 'created_at' => $now,
                                 'updated_at' => $now,
                             ];
@@ -86,23 +84,15 @@ class ListRestocks extends ListRecords
                     }
 
                     if (! empty($rows)) {
+                        // insert() bypasses model events — stock is handled manually below
                         RestockItem::insert($rows);
-                    }
 
-                    // Add stock if created with delivered status — batch variant lookup
-                    if ($record->status === 'delivered') {
-                        $record->refresh();
-
-                        $items      = $record->items;
-                        $variantMap = $this->variantMap($items);
-
-                        foreach ($items as $restockItem) {
-                            $key     = "{$restockItem->item_id}:{$restockItem->size}";
-                            $variant = $variantMap[$key] ?? null;
-
-                            if ($variant) {
-                                $variant->increment('quantity', $restockItem->quantity);
-                            }
+                        // ── Add stock if created directly as 'delivered' ───────
+                        // Since insert() skips model events, we handle stock
+                        // increment here when the restock is saved as delivered
+                        // right from the create modal.
+                        if ($record->status === 'delivered') {
+                            $this->incrementStockForRows($rows);
                         }
                     }
                 }),
@@ -110,40 +100,35 @@ class ListRestocks extends ListRecords
     }
 
     // -------------------------------------------------------------------------
-    // Variant Map
+    // Stock Increment Helper
     // -------------------------------------------------------------------------
 
     /**
-     * Build a keyed map of "item_id:size" => ItemVariant in one query.
+     * Increment stock for a set of raw item rows (as used after insert()).
+     * Groups by item_id + size to minimise queries.
+     *
+     * @param array $rows  Array of ['item_id' => ..., 'size' => ..., 'quantity' => ...]
      */
-    private function variantMap(iterable $items): array
+    private function incrementStockForRows(array $rows): void
     {
-        $pairs = collect($items)->map(fn ($i) => [
-            'item_id' => $i->item_id,
-            'size'    => $i->size,
-        ])->unique()->values();
-
-        if ($pairs->isEmpty()) {
-            return [];
+        // Aggregate quantities per item_id + size in case of duplicates
+        $aggregated = [];
+        foreach ($rows as $row) {
+            $key = "{$row['item_id']}:{$row['size']}";
+            $aggregated[$key] = [
+                'item_id'  => $row['item_id'],
+                'size'     => $row['size'],
+                'quantity' => ($aggregated[$key]['quantity'] ?? 0) + (int) $row['quantity'],
+            ];
         }
 
-        $variants = \App\Models\ItemVariant::query()
-            ->where(function ($q) use ($pairs) {
-                foreach ($pairs as $p) {
-                    $q->orWhere(function ($inner) use ($p) {
-                        $inner->where('item_id', $p['item_id'])
-                              ->where('size_label', $p['size']);
-                    });
-                }
-            })
-            ->get();
+        foreach ($aggregated as $entry) {
+            $variant = ItemVariant::where('item_id', $entry['item_id'])
+                ->where('size_label', $entry['size'])
+                ->first();
 
-        $map = [];
-        foreach ($variants as $v) {
-            $map["{$v->item_id}:{$v->size_label}"] = $v;
+            $variant?->increment('quantity', $entry['quantity']);
         }
-
-        return $map;
     }
 
     // -------------------------------------------------------------------------

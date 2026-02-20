@@ -5,6 +5,7 @@ namespace App\Filament\Resources\Issuances\Pages;
 use App\Filament\Resources\Issuances\IssuanceResource;
 use App\Models\Issuance;
 use App\Models\IssuanceItem;
+use App\Models\ItemVariant;
 use Filament\Actions\CreateAction;
 use Filament\Resources\Pages\ListRecords;
 use Filament\Schemas\Components\Tabs;
@@ -63,7 +64,6 @@ class ListIssuances extends ListRecords
                     return $data;
                 })
                 ->after(function ($record) use (&$cachedItems): void {
-                    // Bulk-insert all issuance items in one go instead of looping creates
                     $rows = [];
                     $now  = now();
 
@@ -81,7 +81,7 @@ class ListIssuances extends ListRecords
                                 'issuance_id' => $record->id,
                                 'item_id'     => $itemId,
                                 'size'        => $size,
-                                'quantity'    => $quantity,
+                                'quantity'    => (int) $quantity,
                                 'created_at'  => $now,
                                 'updated_at'  => $now,
                             ];
@@ -89,10 +89,52 @@ class ListIssuances extends ListRecords
                     }
 
                     if (! empty($rows)) {
-                        \App\Models\IssuanceItem::insert($rows);
+                        // insert() bypasses model events, so we handle
+                        // everything manually here.
+                        IssuanceItem::insert($rows);
+
+                        // ── Deduct stock if status requires it ────────────────
+                        // Since insert() skips IssuanceItem::created events,
+                        // we manually deduct stock here when the issuance is
+                        // created directly as 'issued' or 'released'.
+                        if (in_array($record->status, ['issued', 'released'])) {
+                            $this->deductStockForRows($rows);
+                        }
                     }
                 }),
         ];
+    }
+
+    // -------------------------------------------------------------------------
+    // Stock Deduction Helper
+    // -------------------------------------------------------------------------
+
+    /**
+     * Deduct stock for a set of raw item rows (as used after insert()).
+     * Groups by item_id + size to minimize queries.
+     *
+     * @param array $rows  Array of ['item_id' => ..., 'size' => ..., 'quantity' => ...]
+     */
+    private function deductStockForRows(array $rows): void
+    {
+        // Aggregate quantities per item_id + size in case of duplicates
+        $aggregated = [];
+        foreach ($rows as $row) {
+            $key = "{$row['item_id']}:{$row['size']}";
+            $aggregated[$key] = [
+                'item_id'  => $row['item_id'],
+                'size'     => $row['size'],
+                'quantity' => ($aggregated[$key]['quantity'] ?? 0) + (int) $row['quantity'],
+            ];
+        }
+
+        foreach ($aggregated as $entry) {
+            $variant = ItemVariant::where('item_id', $entry['item_id'])
+                ->where('size_label', $entry['size'])
+                ->first();
+
+            $variant?->decrement('quantity', $entry['quantity']);
+        }
     }
 
     // -------------------------------------------------------------------------

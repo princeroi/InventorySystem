@@ -8,6 +8,7 @@ use App\Models\RestockLog;
 
 class Restock extends Model
 {
+
     protected $fillable = [
         'supplier_name',
         'ordered_by',
@@ -27,6 +28,9 @@ class Restock extends Model
         'returned_at'  => 'date',
         'cancelled_at' => 'date',
     ];
+
+    public ?array $logSnapshot = null;
+    public bool $forceLog      = false;
 
     public function items(): HasMany
     {
@@ -92,12 +96,21 @@ class Restock extends Model
         static::updated(function (self $restock) {
             if (! $restock->isDirty('status')) return;
 
+            $note = null;
+
+            if (! empty($restock->logSnapshot)) {
+                $note = json_encode($restock->logSnapshot);
+            }
+
             RestockLog::create([
                 'restock_id'   => $restock->id,
                 'action'       => $restock->status,
                 'performed_by' => auth()->user()?->name ?? 'System',
-                'note'         => null,
+                'note'         => $note,
             ]);
+
+            $restock->logSnapshot = null;
+            $restock->forceLog    = false;
         });
     }
 

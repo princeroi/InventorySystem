@@ -174,7 +174,8 @@ class RestocksTable
                             $allDelivered = true;
 
                             $record->load('items');
-                            $variantMap = self::variantMap($record->items);
+                            $variantMap   = self::variantMap($record->items);
+                            $itemSnapshot = [];
 
                             foreach ($record->items as $index => $restockItem) {
                                 $deliveredQty = (int) ($quantities[$index] ?? 0);
@@ -197,19 +198,42 @@ class RestocksTable
                                 if ($variant && $delivered > 0) {
                                     $variant->increment('quantity', $delivered);
                                 }
+
+                                // Only snapshot items that had something delivered
+                                if ($delivered > 0) {
+                                    $itemName       = $restockItem->item?->name ?? "Item #{$restockItem->item_id}";
+                                    $label          = $restockItem->size ? "{$itemName} ({$restockItem->size})" : $itemName;
+                                    $itemSnapshot[] = [
+                                        'label'     => $label,
+                                        'delivered' => $delivered,
+                                        'remaining' => $newRemaining,
+                                        'ordered'   => $restockItem->quantity,
+                                    ];
+                                }
                             }
 
-                            $record->update([
-                                'status' => $allDelivered ? 'delivered' : 'partial',
-                            ]);
+                            $newStatus           = $allDelivered ? 'delivered' : 'partial';
+                            $record->logSnapshot = $itemSnapshot;
+                            $record->forceLog    = true;
 
-                            $msg = $allDelivered
-                                ? 'Fully delivered and stock updated.'
-                                : 'Partially delivered and stock updated.';
+                            $record->update(['status' => $newStatus]);
 
+                            // partial → partial: status unchanged so model event won't fire, log manually
+                            if (! $record->wasChanged('status') && $record->forceLog) {
+                                \App\Models\RestockLog::create([
+                                    'restock_id'   => $record->id,
+                                    'action'       => $record->status,
+                                    'performed_by' => auth()->user()?->name ?? 'System',
+                                    'note'         => ! empty($itemSnapshot) ? json_encode($itemSnapshot) : null,
+                                ]);
+
+                                $record->forceLog    = false;
+                                $record->logSnapshot = null;
+                            }
+
+                            $msg = $allDelivered ? 'Fully delivered and stock updated.' : 'Partially delivered and stock updated.';
                             Notification::make()->title($msg)->success()->send();
                         }),
-
                     Action::make('return')
                         ->label('Return')
                         ->color('warning')
@@ -277,18 +301,14 @@ class RestocksTable
                             return $fields;
                         })
                         ->action(function ($record, array $data) {
-                            $record->update(['status' => 'returned']);
-
                             $record->load('items');
-                            $quantities = $data['quantities'] ?? [];
-                            $variantMap = self::variantMap($record->items);
+                            $quantities   = $data['quantities'] ?? [];
+                            $variantMap   = self::variantMap($record->items);
+                            $itemSnapshot = [];
 
                             foreach ($record->items as $index => $restockItem) {
-                                // ✅ Only return what was actually delivered
                                 $maxReturnable    = $restockItem->delivered_quantity ?? $restockItem->quantity;
                                 $quantityToReturn = (int) ($quantities[$index] ?? $maxReturnable);
-
-                                // ✅ Clamp to max returnable — never exceed delivered qty
                                 $quantityToReturn = min($quantityToReturn, $maxReturnable);
 
                                 if ($quantityToReturn <= 0) continue;
@@ -299,7 +319,18 @@ class RestocksTable
                                 if ($variant) {
                                     $variant->decrement('quantity', $quantityToReturn);
                                 }
+
+                                $itemName       = $restockItem->item?->name ?? "Item #{$restockItem->item_id}";
+                                $label          = $restockItem->size ? "{$itemName} ({$restockItem->size})" : $itemName;
+                                $itemSnapshot[] = [
+                                    'label'    => $label,
+                                    'returned' => $quantityToReturn,
+                                    'ordered'  => $restockItem->quantity,
+                                ];
                             }
+
+                            $record->logSnapshot = $itemSnapshot;
+                            $record->update(['status' => 'returned']);
 
                             Notification::make()->title('Restock returned and stock adjusted.')->warning()->send();
                         }),
@@ -394,7 +425,6 @@ class RestocksTable
                     ->modalCancelActionLabel('Close')
                     ->modalWidth('lg')
                     ->form(function ($record): array {
-                        // logs already eager-loaded via getEloquentQuery()
                         $logs = $record->logs;
 
                         if ($logs->isEmpty()) {
@@ -426,12 +456,102 @@ class RestocksTable
 
                         foreach ($logs as $i => $log) {
                             $c      = $config[$log->action] ?? $config['created'];
-                            $date   = \Carbon\Carbon::parse($log->created_at)->format('M d, Y');
-                            $time   = \Carbon\Carbon::parse($log->created_at)->format('h:i A');
+                            $date   = \Carbon\Carbon::parse($log->created_at)->timezone('Asia/Manila')->format('M d, Y');
+                            $time   = \Carbon\Carbon::parse($log->created_at)->timezone('Asia/Manila')->format('h:i A');
                             $isLast = $i === $logCount - 1;
                             $line   = ! $isLast ? "<div style='width:2px; flex:1; background:#e5e7eb; margin-top:4px; min-height:20px;'></div>" : '';
-                            $note   = $log->note ? "<div style='font-size:12px; color:#6b7280; margin-top:6px; padding-top:6px; border-top:1px solid {$c['border']};'>{$log->note}</div>" : '';
                             $pb     = $isLast ? '0' : '16px';
+
+                            // ── Parse item snapshot ───────────────────────
+                            $itemsHtml   = '';
+                            $noteHtml    = '';
+                            $noteText    = '';
+                            $rawNote     = $log->note;
+                            $parsedItems = null;
+
+                            if ($rawNote) {
+                                $decoded = json_decode($rawNote, true);
+                                if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+                                    $parsedItems = $decoded;
+                                } else {
+                                    $noteHtml = "<div style='font-size:12px; color:#6b7280; margin-top:6px; padding-top:6px; border-top:1px solid {$c['border']};'>{$rawNote}</div>";
+                                }
+                            }
+
+                            if (! empty($parsedItems)) {
+                                $rows = '';
+                                foreach ($parsedItems as $item) {
+                                    $label   = e($item['label'] ?? '');
+                                    $ordered = $item['ordered'] ?? '?';
+                                    $chips   = "
+                                        <span style='
+                                            background:#f3f4f6; border:1px solid #e5e7eb;
+                                            border-radius:999px; padding:1px 8px;
+                                            font-size:11px; color:#6b7280; font-weight:500;
+                                        '>📦 {$ordered} ordered</span>
+                                    ";
+
+                                    if (isset($item['delivered'])) {
+                                        $delivered = $item['delivered'];
+                                        $remaining = $item['remaining'] ?? 0;
+
+                                        $chips .= "
+                                            <span style='
+                                                background:#ecfdf5; border:1px solid #a7f3d0;
+                                                border-radius:999px; padding:1px 8px;
+                                                font-size:11px; color:#059669; font-weight:600;
+                                            '>✅ {$delivered} delivered</span>
+                                        ";
+
+                                        if ($remaining > 0) {
+                                            $chips .= "
+                                                <span style='
+                                                    background:#f5f3ff; border:1px solid #ddd6fe;
+                                                    border-radius:999px; padding:1px 8px;
+                                                    font-size:11px; color:#7c3aed; font-weight:600;
+                                                '>⏳ {$remaining} remaining</span>
+                                            ";
+                                        }
+                                    }
+
+                                    if (isset($item['returned'])) {
+                                        $returned = $item['returned'];
+                                        $chips   .= "
+                                            <span style='
+                                                background:#fff7ed; border:1px solid #fed7aa;
+                                                border-radius:999px; padding:1px 8px;
+                                                font-size:11px; color:#ea580c; font-weight:600;
+                                            '>🔄 {$returned} returned</span>
+                                        ";
+                                    }
+
+                                    $rows .= "
+                                        <div style='
+                                            display:flex;
+                                            justify-content:space-between;
+                                            align-items:center;
+                                            padding:6px 0;
+                                            border-bottom:1px solid {$c['border']};
+                                        '>
+                                            <span style='font-size:12px; font-weight:500; color:#374151;'>{$label}</span>
+                                            <div style='display:flex; gap:4px; flex-wrap:wrap; justify-content:flex-end;'>
+                                                {$chips}
+                                            </div>
+                                        </div>
+                                    ";
+                                }
+
+                                $itemsHtml = "
+                                    <div style='margin-top:8px; border-top:1px solid {$c['border']}; padding-top:4px;'>
+                                        {$rows}
+                                    </div>
+                                ";
+                            }
+
+                            // Plain text note (non-JSON)
+                            $noteHtml = $noteText
+                                ? "<div style='font-size:12px; color:#6b7280; margin-top:6px; padding-top:6px; border-top:1px solid {$c['border']};'>{$noteText}</div>"
+                                : '';
 
                             $fields[] = Placeholder::make("log_{$log->id}")
                                 ->label('')
@@ -454,7 +574,8 @@ class RestocksTable
                                                 <div style='font-size:12px; color:#6b7280;'>
                                                     By: <strong style='color:#374151;'>{$log->performed_by}</strong>
                                                 </div>
-                                                {$note}
+                                                {$itemsHtml}
+                                                {$noteHtml}
                                             </div>
                                         </div>
                                     </div>
@@ -463,8 +584,6 @@ class RestocksTable
 
                         return $fields;
                     }),
-            ])
-            ->toolbarActions([
                 BulkActionGroup::make([
                     BulkAction::make('bulk_deliver')
                         ->label('Deliver Selected')
